@@ -1,14 +1,14 @@
 /**
- * SillyTavern extension: Mask User Role
+ * Mask User Role for SillyTavern.
  *
- * Rewrites user-role messages in the final Chat Completion prompt to
- * assistant-role messages. The persisted chat is never modified.
+ * Changes user turns only in SillyTavern's ephemeral generation chat.
+ * The saved chat is never modified.
  */
 (() => {
     'use strict';
 
-    const EXTENSION_KEY = 'MaskUserRole';
-    const DEFAULTS = { enabled: false, mode: 'marker_first' };
+    const KEY = 'MaskUserRole';
+    const DEFAULTS = Object.freeze({ enabled: false, mode: 'marker_first' });
     const MODES = Object.freeze({
         MARKER_FIRST: 'marker_first',
         REWRITE_ALL: 'rewrite_all',
@@ -17,52 +17,57 @@
     });
     const MARKER = '[user-role compatibility marker]';
 
-    function context() {
+    function getContext() {
         return SillyTavern.getContext();
     }
 
-    function settings() {
-        const ctx = context();
+    function getSettings() {
+        const ctx = getContext();
         ctx.extensionSettings ??= {};
-        ctx.extensionSettings[EXTENSION_KEY] ??= { ...DEFAULTS };
-        const value = ctx.extensionSettings[EXTENSION_KEY];
-        if (!Object.values(MODES).includes(value.mode)) value.mode = DEFAULTS.mode;
-        return value;
+        ctx.extensionSettings[KEY] ??= { ...DEFAULTS };
+        const s = ctx.extensionSettings[KEY];
+        if (!Object.values(MODES).includes(s.mode)) s.mode = DEFAULTS.mode;
+        return s;
     }
 
     function saveSettings() {
-        context().saveSettingsDebounced?.();
+        getContext().saveSettingsDebounced?.();
     }
 
-    function mask(data) {
-        const s = settings();
-        if (!s.enabled || !data || typeof data !== 'object') return;
+    /**
+     * SillyTavern calls this through manifest.generate_interceptor before
+     * prompt assembly. `chat` is an ephemeral generation copy, so mutating it
+     * does not alter the actual saved conversation.
+     */
+    globalThis.MaskUserRole_interceptGeneration = async function (chat, _contextSize, _abort, _type) {
+        const s = getSettings();
+        if (!s.enabled || !Array.isArray(chat)) return;
 
-        // CHAT_COMPLETION_PROMPT_READY supplies the final chat-completion
-        // message array. This is deliberately later than GENERATE_AFTER_DATA,
-        // so Prompt Inspector and the provider see the same rewritten roles.
-        const messages = Array.isArray(data.chat) ? data.chat : null;
-        if (!messages || !messages.every(m => m && typeof m === 'object')) return;
-
-        const users = messages.filter(m => m.role === 'user');
-        if (!users.length) return;
+        const users = chat.filter(message => message && message.role === 'user');
+        if (users.length === 0) return;
 
         if (s.mode === MODES.MARKER_FIRST) {
-            messages.unshift({ role: 'user', content: MARKER });
+            chat.unshift({ role: 'user', content: MARKER });
         }
 
         const preserved = s.mode === MODES.KEEP_LAST_USER ? users[users.length - 1] : null;
+
         for (const message of users) {
-            if (message !== preserved) message.role = 'assistant';
+            if (message === preserved) continue;
+            message.role = 'assistant';
+
+            // A `name` such as the persona/user name can otherwise still make
+            // the message look like it came from the user to some backends.
+            delete message.name;
         }
 
         if (s.mode === MODES.MARKER_LAST) {
-            messages.push({ role: 'user', content: MARKER });
+            chat.push({ role: 'user', content: MARKER });
         }
-    }
+    };
 
     function buildUI() {
-        const s = settings();
+        const s = getSettings();
         const root = document.createElement('div');
         root.id = 'mask-user-role-settings';
         root.className = 'inline-drawer extension_settings';
@@ -76,21 +81,17 @@
                     <input type="checkbox" id="mask-user-role-enabled">
                     <span>
                         <b>Mask User Role</b>
-                        <small class="display_block">
-                            Send your turns as the AI's words so the model quits handing your character plot armor.
-                        </small>
+                        <small class="display_block">Send your turns as the AI's words so the model quits handing your character plot armor.</small>
                     </span>
                 </label>
                 <div style="margin-top:8px;">
                     <label for="mask-user-role-mode">Compatibility mode</label>
-                    <small class="display_block">
-                        Some providers reject a request with no user message, so the marker modes add one throwaway user line.
-                    </small>
+                    <small class="display_block">Some providers reject a request with no user message, so the marker modes add one throwaway user line.</small>
                     <select id="mask-user-role-mode" class="text_pole" style="margin-top:5px;">
-                        <option value="marker_first">Marker first (for APIs that need a user message)</option>
+                        <option value="marker_first">Marker first</option>
                         <option value="rewrite_all">No marker: every turn becomes the AI</option>
-                        <option value="marker_last">Marker last (for APIs that need a user message)</option>
-                        <option value="keep_last_user">Keep my final message as user</option>
+                        <option value="marker_last">Marker last</option>
+                        <option value="keep_last_user">Keep final user message</option>
                     </select>
                 </div>
             </div>`;
@@ -117,24 +118,9 @@
     }
 
     function init() {
-        const ctx = context();
-        const { eventSource, event_types: eventTypes } = ctx;
-        if (!eventSource || !eventTypes?.CHAT_COMPLETION_PROMPT_READY) {
-            console.error('[Mask User Role] CHAT_COMPLETION_PROMPT_READY is unavailable.');
-            return;
-        }
-
-        settings();
+        const s = getSettings();
         buildUI();
-        eventSource.on(eventTypes.CHAT_COMPLETION_PROMPT_READY, data => {
-            if (data?.dryRun) return;
-            try {
-                mask(data);
-            } catch (error) {
-                console.error('[Mask User Role] Failed to rewrite prompt:', error);
-            }
-        });
-        console.log('[Mask User Role] loaded.');
+        console.log('[Mask User Role] loaded; interceptor ready.', s.enabled ? '(enabled)' : '(disabled)');
     }
 
     if (document.readyState === 'loading') {

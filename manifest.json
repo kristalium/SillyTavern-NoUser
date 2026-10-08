@@ -1,11 +1,12 @@
 {
   "display_name": "SillyTavern-NoUser",
-  "loading_order": 50,
+  "loading_order": 100,
   "requires": [],
   "optional": [],
   "js": "index.js",
   "css": "style.css",
   "author": "kristalium",
   "version": "1.0.0",
-  "homePage": "https://github.com/kristalium/SillyTavern-NoUser"
+  "homePage": "https://github.com/kristalium/SillyTavern-NoUser",
+  "generate_interceptor": "MaskUserRole_interceptGeneration"
 }
